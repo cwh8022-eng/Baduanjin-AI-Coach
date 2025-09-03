@@ -3,25 +3,25 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Baduanjin AI Coach — Video Only (One-Shot 100 Score)</title>
+  <title>Baduanjin AI Coach — Video Only (One-Shot 100)</title>
 
   <!-- 與 Teachable Machine Pose 最相容 -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/pose@0.8/dist/teachablemachine-pose.min.js"></script>
 
   <style>
-    :root { --w: 960px; }
-    body { font-family: Arial, "Noto Sans TC", system-ui; background:#f3f5f8; padding:22px 14px 40px; color:#111827; }
-    h1 { text-align:center; margin:0 0 8px; font-weight:800 }
-    .hint { text-align:center; color:#6b7280; margin:6px 0 14px }
-    .wrap { width:min(var(--w), 96vw); margin:0 auto }
+    :root { --w: 980px; }
+    body { font-family: Arial,"Noto Sans TC",system-ui; background:#f3f5f8; padding:22px 14px 40px; color:#111827; }
+    h1 { text-align:center; margin:0 0 6px; font-weight:800 }
+    .hint { text-align:center; color:#6b7280; margin:4px 0 14px }
+
+    .wrap { width:min(var(--w),96vw); margin:0 auto }
     .row-btns { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; margin:10px 0 14px }
-    label.upload { padding:10px 16px; border-radius:10px; background:#10b981; color:#fff; cursor:pointer; font-size:16px; box-shadow:0 4px 14px rgba(16,185,129,.2) }
-    input[type=file]{ display:none }
     button { padding:10px 16px; border:0; border-radius:10px; background:#0ea5e9; color:#fff; cursor:pointer; font-size:16px; box-shadow:0 4px 14px rgba(14,165,233,.2) }
     button:hover { filter:brightness(1.05) }
+    .btn-choose { background:#10b981 }
     .row-ctl{ display:flex; gap:10px; justify-content:center; align-items:center; margin:-4px 0 12px; color:#6b7280 }
-    progress{ width:min(600px, 90vw); height:10px }
+    progress{ width:min(600px,90vw); height:10px }
 
     .stage { display:grid; grid-template-columns: 460px 1fr; gap:18px; align-items:flex-start }
     @media (max-width:1020px){ .stage{ grid-template-columns: 1fr } }
@@ -49,21 +49,27 @@
 
     #msg{white-space:pre-line;font-weight:800;color:#c0392b;text-align:center;margin:8px 0 12px}
     .ok{ color:#065f46 }
+
+    /* 備援檔案輸入：可見並可點 */
+    .file-fallback { display:flex; justify-content:center; margin-top:6px; color:#6b7280; font-size:13px }
+    .file-fallback input[type=file]{ display:block }
   </style>
 </head>
 <body>
   <h1>Baduanjin AI Coach (Video)</h1>
-  <div class="hint">One-shot scoring：每式做對一次=100分；總分=八式平均。僅支援影片上傳。</div>
+  <div class="hint">上傳影片辨識 • One-shot：每式做對一次=100分；總分=八式平均。</div>
 
   <div class="wrap">
     <div class="row-btns">
-      <label class="upload">
-        🎬 選擇影片
-        <input id="file" type="file" accept="video/*">
-      </label>
+      <button id="btnChoose" class="btn-choose">🎬 選擇影片</button>
+      <input id="file" type="file" accept="video/*" style="display:none">
       <button id="btnPlay" disabled>▶️ 播放 / 暫停</button>
       <button id="btnReset">🧹 重置評分</button>
     </div>
+    <div class="file-fallback">
+      若上方按鈕無法開啟檔案選擇，請使用備援：<input id="fileFallback" type="file" accept="video/*">
+    </div>
+
     <div class="row-ctl">
       <span id="sourceInfo">來源：—</span>
       <progress id="prog" value="0" max="1" style="display:none"></progress>
@@ -96,7 +102,7 @@
 
 <script>
 (async function(){
-  // 八式名稱
+  // 八式名稱（先渲染固定 UI，模型載入後再對應 metadata）
   const TARGETS = [
     { key:'D1', name:'雙手托天理三焦' },
     { key:'D2', name:'左右開弓似射鵰' },
@@ -129,6 +135,8 @@
   const ctx = cv.getContext('2d');
   const vid = document.getElementById('video');
   const file = document.getElementById('file');
+  const fileFallback = document.getElementById('fileFallback');
+  const btnChoose = document.getElementById('btnChoose');
   const btnPlay = document.getElementById('btnPlay');
   const btnReset = document.getElementById('btnReset');
   const sourceInfo = document.getElementById('sourceInfo');
@@ -143,22 +151,12 @@
   let model, indexMap=null, classNames=[], smooth={}, done={}, score={}, totalAvg=0;
   let currentKey=null, holdStart=0, holdSum=0, holdFrames=0, cooldownUntil=0, sessionStart=0, running=false;
 
+  // 統一來源畫布（影片縮放到 400×400 再進模型 & 繪製）
   const srcCanvas = document.createElement('canvas');
   srcCanvas.width = SIZE; srcCanvas.height = SIZE;
   const srcCtx = srcCanvas.getContext('2d');
 
-  function info(text, ok=false){ const m=$('msg'); m.style.color = ok?'#065f46':'#c0392b'; m.textContent = text; }
-
-  function buildIndexMap(labels){
-    const map={}; TARGETS.forEach(t=>map[t.key]=-1);
-    labels.forEach((name, idx)=>{
-      const n = norm(name);
-      for(const r of MAP_RULES){ if(n.includes(r.token) && map[r.k]===-1){ map[r.k]=idx; break; } }
-      for(let i=1;i<=8;i++){ if(map['D'+i]===-1 && n.includes('d'+i)) map['D'+i]=idx; }
-    });
-    return map;
-  }
-
+  // 先渲染固定 8 條（即使模型未載入也可看到）
   function buildBars(labels){
     barsEl.innerHTML='';
     TARGETS.forEach((t,i)=>{
@@ -167,12 +165,17 @@
       name.innerHTML = `${i+1}. ${t.name} <span class="chips"><span class="chip" id="status-${t.key}">未完成</span><span class="chip" id="sc-${t.key}">0</span></span>`;
       const track = document.createElement('div'); track.className='track';
       const bar = document.createElement('div'); bar.className='bar'; bar.id=`bar-${t.key}`; bar.textContent='0.0%';
-      const cls = document.createElement('div'); cls.className='cls'; cls.id=`cls-${t.key}`; cls.textContent = (indexMap && indexMap[t.key]>=0 && labels[indexMap[t.key]]) ? labels[indexMap[t.key]] : '（未對應）';
+      const cls = document.createElement('div'); cls.className='cls'; cls.id=`cls-${t.key}`;
+      cls.textContent = (labels && labels[i]) ? labels[i] : '（等待模型…）';
       track.appendChild(bar); track.appendChild(cls);
       row.appendChild(name); row.appendChild(track);
       barsEl.appendChild(row);
     });
   }
+  buildBars([]); // 頁面載入就有 8 條
+
+  function info(text, ok=false){ const m=$('msg'); m.style.color = ok?'#065f46':'#c0392b'; m.textContent = text; }
+  function flashRow(key){ const r=$('row-'+key); if(!r) return; r.classList.remove('flash'); void r.offsetWidth; r.classList.add('flash'); }
 
   function resetScores(){
     smooth = Object.fromEntries(TARGETS.map(t=>[t.key,0]));
@@ -186,21 +189,26 @@
     });
     $('totalScore').textContent = '0';
   }
-
   function recalcTotal(){
     const sum = TARGETS.reduce((s,t)=> s + (score[t.key]||0), 0);
     totalAvg = Math.round(sum / TARGETS.length);
     $('totalScore').textContent = totalAvg;
   }
 
-  function flashRow(key){
-    const r = document.getElementById('row-'+key);
-    if(!r) return; r.classList.remove('flash'); void r.offsetWidth; r.classList.add('flash');
+  function buildIndexMap(labels){
+    const map={}; TARGETS.forEach(t=>map[t.key]=-1);
+    labels.forEach((name, idx)=>{
+      const n = norm(name);
+      for(const r of MAP_RULES){ if(n.includes(r.token) && map[r.k]===-1){ map[r.k]=idx; break; } }
+      for(let i=1;i<=8;i++){ if(map['D'+i]===-1 && n.includes('d'+i)) map['D'+i]=idx; }
+    });
+    return map;
   }
 
   async function ensureModel(){
     if (model) return;
     model = await tmPose.load(modelURL, metadataURL);
+    // 更新右側標籤文字
     let labels=[];
     try{
       const meta = await fetch(metadataURL,{cache:'no-store'}).then(r=>r.json());
@@ -209,15 +217,21 @@
     }catch(_){}
     indexMap = buildIndexMap(labels);
     classNames = labels.slice();
-    buildBars(classNames);
+    // 只更新右上灰字（class label）
+    TARGETS.forEach((t,i)=>{
+      const cls = $('cls-'+t.key);
+      if(cls){ const idx = indexMap[t.key]; cls.textContent = (idx>=0 && classNames[idx]) ? classNames[idx] : '(未對應)'; }
+    });
     resetScores();
   }
 
-  btnReset.onclick = ()=>{ resetScores(); info('已重置評分', true); };
+  // 檔案選擇（兩種入口）
+  btnChoose.onclick = ()=> file.click();
+  file.onchange = (e)=> handleFile(e.target.files && e.target.files[0]);
+  fileFallback.onchange = (e)=> handleFile(e.target.files && e.target.files[0]);
 
-  // 影片
-  file.onchange = async (ev)=>{
-    const f = ev.target.files && ev.target.files[0]; if(!f) return;
+  async function handleFile(f){
+    if(!f) return;
     try{
       await ensureModel();
       const url = URL.createObjectURL(f);
@@ -233,8 +247,13 @@
       requestAnimationFrame(loop);
       info('🎬 影片就緒，按「播放/暫停」開始分析', true);
     }catch(e){ info('❌ 影片載入失敗：\n'+(e.message||e)); }
+  }
+
+  btnPlay.onclick = ()=>{
+    if(vid.paused){ vid.play(); btnPlay.textContent='⏸ 暫停'; }
+    else { vid.pause(); btnPlay.textContent='▶️ 播放'; }
   };
-  btnPlay.onclick = ()=>{ if(vid.paused){ vid.play(); btnPlay.textContent='⏸ 暫停'; } else { vid.pause(); btnPlay.textContent='▶️ 播放'; } };
+  btnReset.onclick = ()=>{ resetScores(); info('已重置評分', true); };
 
   function tickTimer(){
     if(!running) return;
@@ -246,6 +265,7 @@
   async function loop(){
     if(!running) return;
     if(vid.readyState >= 2){
+      // 把影片畫到 400×400 源畫布 → 模型與繪圖用同一來源，確保對齊
       srcCtx.drawImage(vid, 0, 0, SIZE, SIZE);
       await stepWithSource(srcCanvas);
       if(vid.duration && isFinite(vid.duration)){
@@ -260,23 +280,76 @@
     const { pose, posenetOutput } = await model.estimatePose(sourceCanvas);
     const preds = await model.predict(posenetOutput);
 
+    // 顯示畫面 + 骨架
     ctx.drawImage(sourceCanvas, 0, 0, cv.width, cv.height);
     if(pose){ tmPose.drawKeypoints(pose.keypoints, 0.5, ctx); tmPose.drawSkeleton(pose.keypoints, 0.5, ctx); }
 
+    // 取 8 類機率（缺的給 0）
     const rawProb = {};
     TARGETS.forEach(t=>{
       const idx = indexMap ? indexMap[t.key] : -1;
       rawProb[t.key] = (idx>=0 && preds[idx]) ? (preds[idx].probability || 0) : 0;
     });
 
+    // 平滑 + 更新條
     let topKey = TARGETS[0].key, topVal = -1;
     TARGETS.forEach(t=>{
       const v = rawProb[t.key];
-      smooth[t.key] = alpha*v + (1-alpha)*(smooth[t.key]||0);
+      if(!(t.key in smooth)) smooth[t.key]=0;
+      smooth[t.key] = alpha*v + (1-alpha)*smooth[t.key];
       const pct = (smooth[t.key]*100).toFixed(1)+'%';
       const bar = document.getElementById('bar-'+t.key);
       if(bar){ bar.style.width = pct; bar.textContent = pct; }
       if(smooth[t.key] > topVal){ topVal = smooth[t.key]; topKey = t.key; }
     });
 
-    $('currentMove').textContent = `${TARGETS.find(x=>x
+    // 顯示當前最高類別
+    document.getElementById('currentMove').textContent =
+      `${TARGETS.find(x=>x.key===topKey)?.name||'—'}（${(topVal*100).toFixed(0)}%）`;
+
+    // One-shot 計分
+    scoreTick(topKey, topVal);
+  }
+
+  function scoreTick(topKey, topVal){
+    const threshold = Math.max(0.5, Math.min(0.95, parseFloat($('thres').value)||0.80));
+    const minHoldMs = Math.max(500, Math.min(5000, (parseFloat($('hold').value)||2)*1000));
+    const cooldownMs= Math.max(200, Math.min(3000, (parseFloat($('cool').value)||0.8)*1000));
+    const now = performance.now();
+
+    if(done[topKey]) return;          // 該式已完成過
+    if(now < cooldownUntil) return;   // 冷卻中
+
+    if(topVal >= threshold){
+      if(currentKey !== topKey){ currentKey = topKey; holdStart = now; holdSum=0; holdFrames=0; }
+      holdSum += topVal; holdFrames++;
+      const held = now - holdStart;
+
+      if(held >= minHoldMs){
+        // 第一次完成 → 100 分
+        done[currentKey] = true;
+        score[currentKey] = 100;
+        document.getElementById('status-'+currentKey).textContent = '✅ 已完成';
+        document.getElementById('sc-'+currentKey).textContent = '100';
+        flashRow(currentKey);
+        recalcTotal();
+
+        cooldownUntil = now + cooldownMs;
+        currentKey=null; holdStart=0; holdSum=0; holdFrames=0;
+      }
+    }else{
+      if(currentKey === topKey){ currentKey=null; holdStart=0; holdSum=0; holdFrames=0; }
+    }
+  }
+
+  // 頁面載入後先把模型載入，右側灰字會顯示對應的 class 名稱
+  try{
+    await ensureModel();
+    info('模型就緒：請選擇影片開始分析', true);
+  }catch(e){
+    info('❌ 模型載入失敗：\n'+(e.message||e));
+  }
+})();
+</script>
+</body>
+</html>
