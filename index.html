@@ -3,23 +3,23 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Baduanjin AI Coach — Camera & Video Scoring</title>
+  <title>Baduanjin AI Coach — Video Only (One-Shot 100 Score)</title>
 
-  <!-- 與 tmPose 最相容 -->
+  <!-- 與 Teachable Machine Pose 最相容 -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/pose@0.8/dist/teachablemachine-pose.min.js"></script>
 
   <style>
-    :root { --w: 1000px; }
+    :root { --w: 960px; }
     body { font-family: Arial, "Noto Sans TC", system-ui; background:#f3f5f8; padding:22px 14px 40px; color:#111827; }
-    h1 { text-align:center; margin:0 0 6px; font-weight:800; letter-spacing:.2px }
-    .hint { text-align:center; color:#6b7280; margin:4px 0 14px }
+    h1 { text-align:center; margin:0 0 8px; font-weight:800 }
+    .hint { text-align:center; color:#6b7280; margin:6px 0 14px }
     .wrap { width:min(var(--w), 96vw); margin:0 auto }
     .row-btns { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; margin:10px 0 14px }
+    label.upload { padding:10px 16px; border-radius:10px; background:#10b981; color:#fff; cursor:pointer; font-size:16px; box-shadow:0 4px 14px rgba(16,185,129,.2) }
+    input[type=file]{ display:none }
     button { padding:10px 16px; border:0; border-radius:10px; background:#0ea5e9; color:#fff; cursor:pointer; font-size:16px; box-shadow:0 4px 14px rgba(14,165,233,.2) }
     button:hover { filter:brightness(1.05) }
-    input[type=file]{ display:none }
-    label.upload { padding:10px 16px; border-radius:10px; background:#10b981; color:#fff; cursor:pointer; font-size:16px; box-shadow:0 4px 14px rgba(16,185,129,.2) }
     .row-ctl{ display:flex; gap:10px; justify-content:center; align-items:center; margin:-4px 0 12px; color:#6b7280 }
     progress{ width:min(600px, 90vw); height:10px }
 
@@ -27,7 +27,7 @@
     @media (max-width:1020px){ .stage{ grid-template-columns: 1fr } }
 
     canvas { width:min(440px,96vw); height:auto; border-radius:12px; border:2px solid #334155; background:#000 }
-    video { display:none } /* 隱藏原生 video，使用我們的畫布顯示 */
+    video { display:none }
 
     .score { background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:12px 14px; margin-bottom:12px; display:flex; gap:14px; flex-wrap:wrap; align-items:center }
     .pill { background:#eef2ff; color:#3730a3; padding:6px 10px; border-radius:999px; font-weight:800 }
@@ -52,12 +52,11 @@
   </style>
 </head>
 <body>
-  <h1>Baduanjin AI Coach</h1>
-  <div class="hint">Camera or Video • tfjs 1.3.1 + tmPose 0.8 • 推論與骨架對齊：同一張 400×400 源畫布</div>
+  <h1>Baduanjin AI Coach (Video)</h1>
+  <div class="hint">One-shot scoring：每式做對一次=100分；總分=八式平均。僅支援影片上傳。</div>
 
   <div class="wrap">
     <div class="row-btns">
-      <button id="btnCam">📷 開始相機</button>
       <label class="upload">
         🎬 選擇影片
         <input id="file" type="file" accept="video/*">
@@ -72,11 +71,11 @@
     </div>
 
     <div class="score">
-      <div class="pill">總分：<strong id="totalScore">0</strong> 分</div>
+      <div class="pill">總分（平均）：<strong id="totalScore">0</strong></div>
       <div class="pill">時間：<strong id="timer">00:00</strong></div>
       <div class="pill">當前：<strong id="currentMove">—</strong></div>
       <div class="cfg">
-        門檻<input id="thres" type="number" step="0.05" min="0.5" max="0.95" value="0.75">
+        門檻<input id="thres" type="number" step="0.05" min="0.5" max="0.95" value="0.80">
         維持秒<input id="hold"  type="number" step="0.5" min="0.5" max="5"   value="2">
         冷卻秒<input id="cool"  type="number" step="0.1" min="0.2" max="3"   value="0.8">
       </div>
@@ -97,7 +96,7 @@
 
 <script>
 (async function(){
-  // 8 式（顯示順序）
+  // 八式名稱
   const TARGETS = [
     { key:'D1', name:'雙手托天理三焦' },
     { key:'D2', name:'左右開弓似射鵰' },
@@ -122,61 +121,32 @@
 
   const modelURL = './model.json';
   const metadataURL = './metadata.json';
-  const SIZE = 400;                 // 統一尺寸（關鍵）
-  const alpha = 0.35;               // 平滑係數
+  const SIZE = 400;
+  const alpha = 0.35;
 
   // DOM
   const cv = document.getElementById('view');
   const ctx = cv.getContext('2d');
   const vid = document.getElementById('video');
-  const btnCam = document.getElementById('btnCam');
   const file = document.getElementById('file');
   const btnPlay = document.getElementById('btnPlay');
   const btnReset = document.getElementById('btnReset');
   const sourceInfo = document.getElementById('sourceInfo');
   const prog = document.getElementById('prog');
   const ts = document.getElementById('ts');
+  const barsEl = document.getElementById('bars');
   const $ = id=>document.getElementById(id);
-  const fmt2 = n => n.toString().padStart(2,'0');
-  function fmtTime(sec){ sec=Math.max(0,sec|0); return `${fmt2(sec/60|0)}:${fmt2(sec%60)}`; }
+  const pad2 = n=> n.toString().padStart(2,'0');
+  const fmt = s=> `${pad2((s/60)|0)}:${pad2((s%60)|0)}`;
 
-  // 評分狀態
-  let model, webcam=null, using='none'; // 'camera' | 'video'
-  let indexMap=null, classNames=[], smooth={}, reps={}, score={}, totalScore=0;
+  // 狀態
+  let model, indexMap=null, classNames=[], smooth={}, done={}, score={}, totalAvg=0;
   let currentKey=null, holdStart=0, holdSum=0, holdFrames=0, cooldownUntil=0, sessionStart=0, running=false;
 
-  // 影片模式用到的「源畫布」（把影片縮放到 400x400 再推論 & 繪圖）
   const srcCanvas = document.createElement('canvas');
   srcCanvas.width = SIZE; srcCanvas.height = SIZE;
   const srcCtx = srcCanvas.getContext('2d');
 
-  // 機率條
-  const barsEl = document.getElementById('bars');
-  function buildBars(labels){
-    barsEl.innerHTML='';
-    TARGETS.forEach((t,i)=>{
-      const row = document.createElement('div'); row.className='row'; row.id=`row-${t.key}`;
-      const name = document.createElement('div'); name.className='name';
-      name.innerHTML = `${i+1}. ${t.name} <span class="chips"><span class="chip" id="rep-${t.key}">0 次</span><span class="chip" id="sc-${t.key}">0 分</span></span>`;
-      const track = document.createElement('div'); track.className='track';
-      const bar = document.createElement('div'); bar.className='bar'; bar.id=`bar-${t.key}`; bar.textContent='0.0%';
-      const cls = document.createElement('div'); cls.className='cls'; cls.id=`cls-${t.key}`; cls.textContent = (indexMap && indexMap[t.key]>=0 && labels[indexMap[t.key]]) ? labels[indexMap[t.key]] : '（未對應）';
-      track.appendChild(bar); track.appendChild(cls);
-      row.appendChild(name); row.appendChild(track);
-      barsEl.appendChild(row);
-    });
-  }
-  function flashRow(key){
-    const r = document.getElementById('row-'+key);
-    if(!r) return; r.classList.remove('flash'); void r.offsetWidth; r.classList.add('flash');
-  }
-  function updateCounters(){
-    TARGETS.forEach(t=>{
-      $('rep-'+t.key).textContent = `${reps[t.key]} 次`;
-      $('sc-'+t.key).textContent  = `${score[t.key]} 分`;
-    });
-    $('totalScore').textContent = totalScore;
-  }
   function info(text, ok=false){ const m=$('msg'); m.style.color = ok?'#065f46':'#c0392b'; m.textContent = text; }
 
   function buildIndexMap(labels){
@@ -188,18 +158,46 @@
     });
     return map;
   }
-  function resetScores(){
-    smooth = Object.fromEntries(TARGETS.map(t=>[t.key,0]));
-    reps   = Object.fromEntries(TARGETS.map(t=>[t.key,0]));
-    score  = Object.fromEntries(TARGETS.map(t=>[t.key,0]));
-    totalScore = 0;
-    currentKey=null; holdStart=0; holdSum=0; holdFrames=0; cooldownUntil=0;
-    updateCounters();
+
+  function buildBars(labels){
+    barsEl.innerHTML='';
+    TARGETS.forEach((t,i)=>{
+      const row = document.createElement('div'); row.className='row'; row.id=`row-${t.key}`;
+      const name = document.createElement('div'); name.className='name';
+      name.innerHTML = `${i+1}. ${t.name} <span class="chips"><span class="chip" id="status-${t.key}">未完成</span><span class="chip" id="sc-${t.key}">0</span></span>`;
+      const track = document.createElement('div'); track.className='track';
+      const bar = document.createElement('div'); bar.className='bar'; bar.id=`bar-${t.key}`; bar.textContent='0.0%';
+      const cls = document.createElement('div'); cls.className='cls'; cls.id=`cls-${t.key}`; cls.textContent = (indexMap && indexMap[t.key]>=0 && labels[indexMap[t.key]]) ? labels[indexMap[t.key]] : '（未對應）';
+      track.appendChild(bar); track.appendChild(cls);
+      row.appendChild(name); row.appendChild(track);
+      barsEl.appendChild(row);
+    });
   }
 
-  btnReset.onclick = ()=>{ resetScores(); info('已重置評分', true); };
+  function resetScores(){
+    smooth = Object.fromEntries(TARGETS.map(t=>[t.key,0]));
+    done   = Object.fromEntries(TARGETS.map(t=>[t.key,false]));
+    score  = Object.fromEntries(TARGETS.map(t=>[t.key,0]));
+    totalAvg = 0;
+    TARGETS.forEach(t=>{
+      $('status-'+t.key).textContent = '未完成';
+      $('sc-'+t.key).textContent = '0';
+      const row = $('row-'+t.key); row && row.classList.remove('flash');
+    });
+    $('totalScore').textContent = '0';
+  }
 
-  // 載入模型（第一次需要）
+  function recalcTotal(){
+    const sum = TARGETS.reduce((s,t)=> s + (score[t.key]||0), 0);
+    totalAvg = Math.round(sum / TARGETS.length);
+    $('totalScore').textContent = totalAvg;
+  }
+
+  function flashRow(key){
+    const r = document.getElementById('row-'+key);
+    if(!r) return; r.classList.remove('flash'); void r.offsetWidth; r.classList.add('flash');
+  }
+
   async function ensureModel(){
     if (model) return;
     model = await tmPose.load(modelURL, metadataURL);
@@ -215,120 +213,62 @@
     resetScores();
   }
 
-  // 啟動相機
-  btnCam.onclick = async ()=>{
-    try{
-      await ensureModel();
-      if(webcam){ await webcam.stop(); webcam=null; }
-      if(!window.isSecureContext) throw new Error('此頁面不是 HTTPS / localhost，瀏覽器會封鎖相機');
+  btnReset.onclick = ()=>{ resetScores(); info('已重置評分', true); };
 
-      webcam = new tmPose.Webcam(SIZE, SIZE, true); // flip=true（鏡像）
-      await webcam.setup();
-      await webcam.play();
-
-      using = 'camera';
-      cv.width=SIZE; cv.height=SIZE;
-      vid.pause(); vid.removeAttribute('src'); vid.load();
-      btnPlay.disabled = true;
-      prog.style.display='none';
-      sourceInfo.textContent = '來源：Camera（鏡像）';
-      $('timer').textContent = '00:00';
-      sessionStart = performance.now();
-      running = true;
-      requestAnimationFrame(tickTimer);
-      requestAnimationFrame(loop);
-      info('✅ 相機已啟動', true);
-    }catch(e){
-      info('❌ 相機啟動失敗：\n'+(e.message||e)); console.error(e);
-    }
-  };
-
-  // 選擇影片
+  // 影片
   file.onchange = async (ev)=>{
-    const f = ev.target.files && ev.target.files[0];
-    if(!f) return;
+    const f = ev.target.files && ev.target.files[0]; if(!f) return;
     try{
       await ensureModel();
-      // 停用相機
-      if(webcam){ await webcam.stop(); webcam=null; }
-
       const url = URL.createObjectURL(f);
       vid.src = url;
-      await vid.play(); // 先嘗試播放以獲得 videoWidth/Height
-      vid.pause(); vid.currentTime = 0;
+      await vid.play(); vid.pause(); vid.currentTime = 0;
 
-      using = 'video';
       cv.width=SIZE; cv.height=SIZE;
-      btnPlay.disabled = false;
-      prog.style.display = 'inline-block';
+      btnPlay.disabled = false; prog.style.display='inline-block';
       sourceInfo.textContent = `來源：Video（${f.name}）`;
       $('timer').textContent = '00:00';
-      sessionStart = performance.now();
-      running = true;
+      running = true; sessionStart = performance.now();
       requestAnimationFrame(tickTimer);
       requestAnimationFrame(loop);
-      info('🎬 載入影片成功，按「播放/暫停」開始分析', true);
-    }catch(e){
-      info('❌ 影片載入失敗：\n'+(e.message||e)); console.error(e);
-    }
+      info('🎬 影片就緒，按「播放/暫停」開始分析', true);
+    }catch(e){ info('❌ 影片載入失敗：\n'+(e.message||e)); }
   };
-
-  // 播放/暫停
-  btnPlay.onclick = ()=>{
-    if(using!=='video') return;
-    if(vid.paused) { vid.play(); btnPlay.textContent='⏸ 暫停'; }
-    else { vid.pause(); btnPlay.textContent='▶️ 播放'; }
-  };
+  btnPlay.onclick = ()=>{ if(vid.paused){ vid.play(); btnPlay.textContent='⏸ 暫停'; } else { vid.pause(); btnPlay.textContent='▶️ 播放'; } };
 
   function tickTimer(){
     if(!running) return;
     const sec = Math.max(0, Math.round((performance.now()-sessionStart)/1000));
-    $('timer').textContent = `${fmt2(sec/60)}:${fmt2(sec%60)}`;
+    $('timer').textContent = fmt(sec);
     requestAnimationFrame(tickTimer);
   }
 
   async function loop(){
     if(!running) return;
-
-    if(using==='camera'){
-      webcam.update();
-      await stepWithSource(webcam.canvas); // 源畫布 = tmPose 內部鏡像後的 400x400
-    }else if(using==='video'){
-      // 把影片畫到 400x400 的 srcCanvas（保持一致）
-      if(vid.readyState >= 2){ // HAVE_CURRENT_DATA
-        srcCtx.drawImage(vid, 0, 0, SIZE, SIZE);
-        await stepWithSource(srcCanvas);
-        // 影片進度
-        if(vid.duration && isFinite(vid.duration)){
-          prog.value = vid.currentTime / vid.duration;
-          ts.textContent = `${fmtTime(vid.currentTime)} / ${fmtTime(vid.duration)}`;
-        }
+    if(vid.readyState >= 2){
+      srcCtx.drawImage(vid, 0, 0, SIZE, SIZE);
+      await stepWithSource(srcCanvas);
+      if(vid.duration && isFinite(vid.duration)){
+        prog.value = vid.currentTime / vid.duration;
+        ts.textContent = `${fmt(vid.currentTime|0)} / ${fmt(vid.duration|0)}`;
       }
     }
-
     requestAnimationFrame(loop);
   }
 
-  // 共用一步：以「sourceCanvas」做推論與繪圖，確保座標系一致
   async function stepWithSource(sourceCanvas){
     const { pose, posenetOutput } = await model.estimatePose(sourceCanvas);
     const preds = await model.predict(posenetOutput);
 
-    // 機率 map（對映）
+    ctx.drawImage(sourceCanvas, 0, 0, cv.width, cv.height);
+    if(pose){ tmPose.drawKeypoints(pose.keypoints, 0.5, ctx); tmPose.drawSkeleton(pose.keypoints, 0.5, ctx); }
+
     const rawProb = {};
     TARGETS.forEach(t=>{
       const idx = indexMap ? indexMap[t.key] : -1;
       rawProb[t.key] = (idx>=0 && preds[idx]) ? (preds[idx].probability || 0) : 0;
     });
 
-    // 影像與骨架：把「同一張 sourceCanvas」畫到顯示用 canvas，再畫骨架 → 絕不會位移
-    ctx.drawImage(sourceCanvas, 0, 0, cv.width, cv.height);
-    if(pose){
-      tmPose.drawKeypoints(pose.keypoints, 0.5, ctx);
-      tmPose.drawSkeleton(pose.keypoints, 0.5, ctx);
-    }
-
-    // 平滑 + 條
     let topKey = TARGETS[0].key, topVal = -1;
     TARGETS.forEach(t=>{
       const v = rawProb[t.key];
@@ -339,57 +279,4 @@
       if(smooth[t.key] > topVal){ topVal = smooth[t.key]; topKey = t.key; }
     });
 
-    // 當前最高顯示
-    const human = TARGETS.find(x=>x.key===topKey)?.name || '—';
-    document.getElementById('currentMove').textContent = `${human}（${(topVal*100).toFixed(0)}%）`;
-
-    // 評分
-    scoreTick(topKey, topVal);
-  }
-
-  function scoreTick(topKey, topVal){
-    const threshold = Math.max(0.5, Math.min(0.95, parseFloat($('thres').value)||0.75));
-    const minHoldMs = Math.max(500, Math.min(5000, (parseFloat($('hold').value)||2)*1000));
-    const cooldownMs= Math.max(200, Math.min(3000, (parseFloat($('cool').value)||0.8)*1000));
-    const now = performance.now();
-
-    if(now < cooldownUntil) return;
-
-    if(topVal >= threshold){
-      if(currentKey !== topKey){
-        currentKey = topKey; holdStart = now; holdSum=0; holdFrames=0;
-      }
-      holdSum += topVal; holdFrames++;
-      const held = now - holdStart;
-
-      if(held >= minHoldMs){
-        const avg = holdSum / Math.max(1, holdFrames);
-        const secs = held/1000;
-        const points = Math.max(1, Math.round(secs * 10 * Math.max(0.5, avg)));
-        reps[currentKey]  = (reps[currentKey]||0) + 1;
-        score[currentKey] = (score[currentKey]||0) + points;
-        totalScore       += points;
-
-        // UI
-        updateCounters(); flashRow(currentKey);
-
-        // 冷卻
-        cooldownUntil = now + cooldownMs;
-        currentKey=null; holdStart=0; holdSum=0; holdFrames=0;
-      }
-    }else{
-      currentKey=null; holdStart=0; holdSum=0; holdFrames=0;
-    }
-  }
-
-  // 初始化（載入 model 後再建 UI）
-  try{
-    await ensureModel();
-    info('模型就緒：可選相機或影片開始辨識', true);
-  }catch(e){
-    info('❌ 模型載入失敗：\n'+(e.message||e));
-  }
-})();
-</script>
-</body>
-</html>
+    $('currentMove').textContent = `${TARGETS.find(x=>x
