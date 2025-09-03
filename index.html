@@ -1,355 +1,177 @@
-<!DOCTYPE html>
-<html lang="zh-Hant">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Baduanjin AI Coach — Video Only (One-Shot 100)</title>
-
-  <!-- 與 Teachable Machine Pose 最相容 -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/pose@0.8/dist/teachablemachine-pose.min.js"></script>
-
-  <style>
-    :root { --w: 980px; }
-    body { font-family: Arial,"Noto Sans TC",system-ui; background:#f3f5f8; padding:22px 14px 40px; color:#111827; }
-    h1 { text-align:center; margin:0 0 6px; font-weight:800 }
-    .hint { text-align:center; color:#6b7280; margin:4px 0 14px }
-
-    .wrap { width:min(var(--w),96vw); margin:0 auto }
-    .row-btns { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; margin:10px 0 14px }
-    button { padding:10px 16px; border:0; border-radius:10px; background:#0ea5e9; color:#fff; cursor:pointer; font-size:16px; box-shadow:0 4px 14px rgba(14,165,233,.2) }
-    button:hover { filter:brightness(1.05) }
-    .btn-choose { background:#10b981 }
-    .row-ctl{ display:flex; gap:10px; justify-content:center; align-items:center; margin:-4px 0 12px; color:#6b7280 }
-    progress{ width:min(600px,90vw); height:10px }
-
-    .stage { display:grid; grid-template-columns: 460px 1fr; gap:18px; align-items:flex-start }
-    @media (max-width:1020px){ .stage{ grid-template-columns: 1fr } }
-
-    canvas { width:min(440px,96vw); height:auto; border-radius:12px; border:2px solid #334155; background:#000 }
-    video { display:none }
-
-    .score { background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:12px 14px; margin-bottom:12px; display:flex; gap:14px; flex-wrap:wrap; align-items:center }
-    .pill { background:#eef2ff; color:#3730a3; padding:6px 10px; border-radius:999px; font-weight:800 }
-    .pill strong{ font-variant-numeric: tabular-nums }
-    .cfg { color:#6b7280; font-size:14px }
-    .cfg input { width:64px; padding:4px 6px; border-radius:8px; border:1px solid #cbd5e1; margin-left:4px }
-
-    .panel { background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:12px 14px }
-    .title { font-size:14px; color:#6b7280; margin:0 0 8px }
-    .row { display:grid; grid-template-columns: 190px 1fr; gap:12px; align-items:center; margin:10px 0 }
-    .name { font-weight:700; color:#374151; display:flex; align-items:center; gap:8px }
-    .chips { display:inline-flex; gap:6px; margin-left:6px }
-    .chip { background:#e2e8f0; color:#0f172a; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700 }
-    .track { position:relative; background:#e5e7eb; border-radius:999px; overflow:hidden; height:22px; box-shadow: inset 0 1px 1px rgba(0,0,0,.06) }
-    .bar { height:100%; width:0%; background:linear-gradient(90deg,#34d399,#10b981); color:#fff; line-height:22px; text-align:right; padding-right:8px; font-size:12px; font-weight:700; transition:width .12s linear }
-    .cls { position:absolute; right:8px; top:-18px; font-size:11px; color:#6b7280 }
-    .flash { animation:flash .5s ease }
-    @keyframes flash{ from{ box-shadow:0 0 0 0 rgba(16,185,129,.8)} to{ box-shadow:0 0 0 12px rgba(16,185,129,0)}}
-
-    #msg{white-space:pre-line;font-weight:800;color:#c0392b;text-align:center;margin:8px 0 12px}
-    .ok{ color:#065f46 }
-
-    /* 備援檔案輸入：可見並可點 */
-    .file-fallback { display:flex; justify-content:center; margin-top:6px; color:#6b7280; font-size:13px }
-    .file-fallback input[type=file]{ display:block }
-  </style>
-</head>
-<body>
-  <h1>Baduanjin AI Coach (Video)</h1>
-  <div class="hint">上傳影片辨識 • One-shot：每式做對一次=100分；總分=八式平均。</div>
-
-  <div class="wrap">
-    <div class="row-btns">
-      <button id="btnChoose" class="btn-choose">🎬 選擇影片</button>
-      <input id="file" type="file" accept="video/*" style="display:none">
-      <button id="btnPlay" disabled>▶️ 播放 / 暫停</button>
-      <button id="btnReset">🧹 重置評分</button>
-    </div>
-    <div class="file-fallback">
-      若上方按鈕無法開啟檔案選擇，請使用備援：<input id="fileFallback" type="file" accept="video/*">
-    </div>
-
-    <div class="row-ctl">
-      <span id="sourceInfo">來源：—</span>
-      <progress id="prog" value="0" max="1" style="display:none"></progress>
-      <span id="ts" style="min-width:100px; text-align:right"></span>
-    </div>
-
-    <div class="score">
-      <div class="pill">總分（平均）：<strong id="totalScore">0</strong></div>
-      <div class="pill">時間：<strong id="timer">00:00</strong></div>
-      <div class="pill">當前：<strong id="currentMove">—</strong></div>
-      <div class="cfg">
-        門檻<input id="thres" type="number" step="0.05" min="0.5" max="0.95" value="0.80">
-        維持秒<input id="hold"  type="number" step="0.5" min="0.5" max="5"   value="2">
-        冷卻秒<input id="cool"  type="number" step="0.1" min="0.2" max="3"   value="0.8">
-      </div>
-    </div>
-
-    <div id="msg"></div>
-
-    <div class="stage">
-      <canvas id="view" width="400" height="400"></canvas>
-      <video id="video" playsinline crossorigin="anonymous"></video>
-
-      <div class="panel">
-        <p class="title">即時辨識（固定八式順序）</p>
-        <div id="bars"></div>
-      </div>
-    </div>
-  </div>
-
 <script>
-(async function(){
-  // 八式名稱（先渲染固定 UI，模型載入後再對應 metadata）
-  const TARGETS = [
-    { key:'D1', name:'雙手托天理三焦' },
-    { key:'D2', name:'左右開弓似射鵰' },
-    { key:'D3', name:'調理脾胃須單舉' },
-    { key:'D4', name:'五勞七傷往後瞧' },
-    { key:'D5', name:'搖頭擺尾去心火' },
-    { key:'D6', name:'兩手攀足固腎腰' },
-    { key:'D7', name:'攢拳怒目增氣力' },
-    { key:'D8', name:'背後七顛百病消' }
-  ];
-  const MAP_RULES = [
-    { token:'雙手托天', k:'D1' }, { token:'托天', k:'D1' },
-    { token:'開弓', k:'D2' }, { token:'射雕', k:'D2' }, { token:'射鵰', k:'D2' },
-    { token:'單舉', k:'D3' }, { token:'脾胃', k:'D3' },
-    { token:'往後瞧', k:'D4' }, { token:'七傷', k:'D4' },
-    { token:'擺尾', k:'D5' }, { token:'去心火', k:'D5' },
-    { token:'攀足', k:'D6' }, { token:'腎腰', k:'D6' },
-    { token:'攢拳', k:'D7' }, { token:'增氣力', k:'D7' },
-    { token:'七顛', k:'D8' }, { token:'百病消', k:'D8' }
-  ];
-  const norm = s => (s||'').replace(/\s+/g,'').replace(/正確/g,'').replace(/[()（）\[\]【】：:，,。.\-_/]/g,'').replace(/雕/g,'鵰').toLowerCase();
+// ==========（可調參數）==========
+const SIZE = 400;
+const EMA_ALPHA = 0.35;         // 單幀指數平滑
+const WINDOW = 12;              // 滑動視窗幀數（約 0.4s~0.6s 視影片 fps）
+const MARGIN = 0.20;            // Top-1 與 Top-2 最小差距，避免混淆
+const FALLBACK_THRESH = 0.80;   // UI 門檻輸入的預設值
 
-  const modelURL = './model.json';
-  const metadataURL = './metadata.json';
-  const SIZE = 400;
-  const alpha = 0.35;
+// 針對每一式給「最低信心門檻」（可依你模型調整）
+const PER_CLASS_THRESH = {
+  D1: 0.80, D2: 0.85, D3: 0.80, D4: 0.80,
+  D5: 0.82, D6: 0.82, D7: 0.85, D8: 0.80
+};
 
-  // DOM
-  const cv = document.getElementById('view');
-  const ctx = cv.getContext('2d');
-  const vid = document.getElementById('video');
-  const file = document.getElementById('file');
-  const fileFallback = document.getElementById('fileFallback');
-  const btnChoose = document.getElementById('btnChoose');
-  const btnPlay = document.getElementById('btnPlay');
-  const btnReset = document.getElementById('btnReset');
-  const sourceInfo = document.getElementById('sourceInfo');
-  const prog = document.getElementById('prog');
-  const ts = document.getElementById('ts');
-  const barsEl = document.getElementById('bars');
-  const $ = id=>document.getElementById(id);
-  const pad2 = n=> n.toString().padStart(2,'0');
-  const fmt = s=> `${pad2((s/60)|0)}:${pad2((s%60)|0)}`;
+// ==========（狀態）==========
+let model, indexMap=null, classNames=[], running=false;
+let smooth={},  // EMA 平滑
+    ring=[],    // 滑動視窗：存每幀的平滑後機率
+    done={},    // 每式是否已完成
+    score={},   // 每式分數（100/0）
+    totalAvg=0; // 八式平均
 
-  // 狀態
-  let model, indexMap=null, classNames=[], smooth={}, done={}, score={}, totalAvg=0;
-  let currentKey=null, holdStart=0, holdSum=0, holdFrames=0, cooldownUntil=0, sessionStart=0, running=false;
+let currentKey=null, holdStart=0, holdSum=0, holdFrames=0, cooldownUntil=0;
+let sessionStart=0;
 
-  // 統一來源畫布（影片縮放到 400×400 再進模型 & 繪製）
-  const srcCanvas = document.createElement('canvas');
-  srcCanvas.width = SIZE; srcCanvas.height = SIZE;
-  const srcCtx = srcCanvas.getContext('2d');
+const cv = document.getElementById('view');
+const ctx = cv.getContext('2d');
+const vid = document.getElementById('video');
+const prog = document.getElementById('prog');
+const ts = document.getElementById('ts');
+const $ = id=>document.getElementById(id);
+const pad2 = n=> n.toString().padStart(2,'0');
+const fmt  = s=> `${pad2((s/60)|0)}:${pad2((s%60)|0)}`;
 
-  // 先渲染固定 8 條（即使模型未載入也可看到）
-  function buildBars(labels){
-    barsEl.innerHTML='';
-    TARGETS.forEach((t,i)=>{
-      const row = document.createElement('div'); row.className='row'; row.id=`row-${t.key}`;
-      const name = document.createElement('div'); name.className='name';
-      name.innerHTML = `${i+1}. ${t.name} <span class="chips"><span class="chip" id="status-${t.key}">未完成</span><span class="chip" id="sc-${t.key}">0</span></span>`;
-      const track = document.createElement('div'); track.className='track';
-      const bar = document.createElement('div'); bar.className='bar'; bar.id=`bar-${t.key}`; bar.textContent='0.0%';
-      const cls = document.createElement('div'); cls.className='cls'; cls.id=`cls-${t.key}`;
-      cls.textContent = (labels && labels[i]) ? labels[i] : '（等待模型…）';
-      track.appendChild(bar); track.appendChild(cls);
-      row.appendChild(name); row.appendChild(track);
-      barsEl.appendChild(row);
-    });
-  }
-  buildBars([]); // 頁面載入就有 8 條
+// 你原本的八式 & 對應規則請保留（略）……
+// const TARGETS = [...];  const MAP_RULES = [...]; const norm = ...
 
-  function info(text, ok=false){ const m=$('msg'); m.style.color = ok?'#065f46':'#c0392b'; m.textContent = text; }
-  function flashRow(key){ const r=$('row-'+key); if(!r) return; r.classList.remove('flash'); void r.offsetWidth; r.classList.add('flash'); }
+function info(text, ok=false){ const m=$('msg'); m.style.color = ok?'#065f46':'#c0392b'; m.textContent = text; }
+function flashRow(key){ const r=$('row-'+key); if(!r) return; r.classList.remove('flash'); void r.offsetWidth; r.classList.add('flash'); }
 
-  function resetScores(){
-    smooth = Object.fromEntries(TARGETS.map(t=>[t.key,0]));
-    done   = Object.fromEntries(TARGETS.map(t=>[t.key,false]));
-    score  = Object.fromEntries(TARGETS.map(t=>[t.key,0]));
-    totalAvg = 0;
-    TARGETS.forEach(t=>{
-      $('status-'+t.key).textContent = '未完成';
-      $('sc-'+t.key).textContent = '0';
-      const row = $('row-'+t.key); row && row.classList.remove('flash');
-    });
-    $('totalScore').textContent = '0';
-  }
-  function recalcTotal(){
-    const sum = TARGETS.reduce((s,t)=> s + (score[t.key]||0), 0);
-    totalAvg = Math.round(sum / TARGETS.length);
-    $('totalScore').textContent = totalAvg;
-  }
+// 重新計算總分（八式平均）
+function recalcTotal(){
+  const sum = TARGETS.reduce((s,t)=> s + (score[t.key]||0), 0);
+  totalAvg = Math.round(sum / TARGETS.length);
+  $('totalScore').textContent = totalAvg;
+}
 
-  function buildIndexMap(labels){
-    const map={}; TARGETS.forEach(t=>map[t.key]=-1);
-    labels.forEach((name, idx)=>{
-      const n = norm(name);
-      for(const r of MAP_RULES){ if(n.includes(r.token) && map[r.k]===-1){ map[r.k]=idx; break; } }
-      for(let i=1;i<=8;i++){ if(map['D'+i]===-1 && n.includes('d'+i)) map['D'+i]=idx; }
-    });
-    return map;
-  }
+// UI 初始化用（請保留你原本的 buildBars）
+function resetScores(){
+  smooth = Object.fromEntries(TARGETS.map(t=>[t.key,0]));
+  ring = [];
+  done   = Object.fromEntries(TARGETS.map(t=>[t.key,false]));
+  score  = Object.fromEntries(TARGETS.map(t=>[t.key,0]));
+  totalAvg = 0;
+  TARGETS.forEach(t=>{
+    $('status-'+t.key).textContent = '未完成';
+    $('sc-'+t.key).textContent = '0';
+    const row = $('row-'+t.key); row && row.classList.remove('flash');
+    const bar = $('bar-'+t.key); if(bar){ bar.style.width='0%'; bar.textContent='0.0%'; }
+  });
+  $('totalScore').textContent = '0';
+}
 
-  async function ensureModel(){
-    if (model) return;
-    model = await tmPose.load(modelURL, metadataURL);
-    // 更新右側標籤文字
-    let labels=[];
-    try{
-      const meta = await fetch(metadataURL,{cache:'no-store'}).then(r=>r.json());
-      const raw  = meta.labels || meta.classes || [];
-      labels = raw.map(x => (x && x.label) ? x.label : (typeof x==='string' ? x : ''));
-    }catch(_){}
-    indexMap = buildIndexMap(labels);
-    classNames = labels.slice();
-    // 只更新右上灰字（class label）
-    TARGETS.forEach((t,i)=>{
-      const cls = $('cls-'+t.key);
-      if(cls){ const idx = indexMap[t.key]; cls.textContent = (idx>=0 && classNames[idx]) ? classNames[idx] : '(未對應)'; }
-    });
-    resetScores();
-  }
-
-  // 檔案選擇（兩種入口）
-  btnChoose.onclick = ()=> file.click();
-  file.onchange = (e)=> handleFile(e.target.files && e.target.files[0]);
-  fileFallback.onchange = (e)=> handleFile(e.target.files && e.target.files[0]);
-
-  async function handleFile(f){
-    if(!f) return;
-    try{
-      await ensureModel();
-      const url = URL.createObjectURL(f);
-      vid.src = url;
-      await vid.play(); vid.pause(); vid.currentTime = 0;
-
-      cv.width=SIZE; cv.height=SIZE;
-      btnPlay.disabled = false; prog.style.display='inline-block';
-      sourceInfo.textContent = `來源：Video（${f.name}）`;
-      $('timer').textContent = '00:00';
-      running = true; sessionStart = performance.now();
-      requestAnimationFrame(tickTimer);
-      requestAnimationFrame(loop);
-      info('🎬 影片就緒，按「播放/暫停」開始分析', true);
-    }catch(e){ info('❌ 影片載入失敗：\n'+(e.message||e)); }
-  }
-
-  btnPlay.onclick = ()=>{
-    if(vid.paused){ vid.play(); btnPlay.textContent='⏸ 暫停'; }
-    else { vid.pause(); btnPlay.textContent='▶️ 播放'; }
-  };
-  btnReset.onclick = ()=>{ resetScores(); info('已重置評分', true); };
-
-  function tickTimer(){
-    if(!running) return;
-    const sec = Math.max(0, Math.round((performance.now()-sessionStart)/1000));
-    $('timer').textContent = fmt(sec);
-    requestAnimationFrame(tickTimer);
-  }
-
-  async function loop(){
-    if(!running) return;
-    if(vid.readyState >= 2){
-      // 把影片畫到 400×400 源畫布 → 模型與繪圖用同一來源，確保對齊
-      srcCtx.drawImage(vid, 0, 0, SIZE, SIZE);
-      await stepWithSource(srcCanvas);
-      if(vid.duration && isFinite(vid.duration)){
-        prog.value = vid.currentTime / vid.duration;
-        ts.textContent = `${fmt(vid.currentTime|0)} / ${fmt(vid.duration|0)}`;
-      }
-    }
-    requestAnimationFrame(loop);
-  }
-
-  async function stepWithSource(sourceCanvas){
-    const { pose, posenetOutput } = await model.estimatePose(sourceCanvas);
-    const preds = await model.predict(posenetOutput);
-
-    // 顯示畫面 + 骨架
-    ctx.drawImage(sourceCanvas, 0, 0, cv.width, cv.height);
-    if(pose){ tmPose.drawKeypoints(pose.keypoints, 0.5, ctx); tmPose.drawSkeleton(pose.keypoints, 0.5, ctx); }
-
-    // 取 8 類機率（缺的給 0）
-    const rawProb = {};
-    TARGETS.forEach(t=>{
-      const idx = indexMap ? indexMap[t.key] : -1;
-      rawProb[t.key] = (idx>=0 && preds[idx]) ? (preds[idx].probability || 0) : 0;
-    });
-
-    // 平滑 + 更新條
-    let topKey = TARGETS[0].key, topVal = -1;
-    TARGETS.forEach(t=>{
-      const v = rawProb[t.key];
-      if(!(t.key in smooth)) smooth[t.key]=0;
-      smooth[t.key] = alpha*v + (1-alpha)*smooth[t.key];
-      const pct = (smooth[t.key]*100).toFixed(1)+'%';
-      const bar = document.getElementById('bar-'+t.key);
-      if(bar){ bar.style.width = pct; bar.textContent = pct; }
-      if(smooth[t.key] > topVal){ topVal = smooth[t.key]; topKey = t.key; }
-    });
-
-    // 顯示當前最高類別
-    document.getElementById('currentMove').textContent =
-      `${TARGETS.find(x=>x.key===topKey)?.name||'—'}（${(topVal*100).toFixed(0)}%）`;
-
-    // One-shot 計分
-    scoreTick(topKey, topVal);
-  }
-
-  function scoreTick(topKey, topVal){
-    const threshold = Math.max(0.5, Math.min(0.95, parseFloat($('thres').value)||0.80));
-    const minHoldMs = Math.max(500, Math.min(5000, (parseFloat($('hold').value)||2)*1000));
-    const cooldownMs= Math.max(200, Math.min(3000, (parseFloat($('cool').value)||0.8)*1000));
-    const now = performance.now();
-
-    if(done[topKey]) return;          // 該式已完成過
-    if(now < cooldownUntil) return;   // 冷卻中
-
-    if(topVal >= threshold){
-      if(currentKey !== topKey){ currentKey = topKey; holdStart = now; holdSum=0; holdFrames=0; }
-      holdSum += topVal; holdFrames++;
-      const held = now - holdStart;
-
-      if(held >= minHoldMs){
-        // 第一次完成 → 100 分
-        done[currentKey] = true;
-        score[currentKey] = 100;
-        document.getElementById('status-'+currentKey).textContent = '✅ 已完成';
-        document.getElementById('sc-'+currentKey).textContent = '100';
-        flashRow(currentKey);
-        recalcTotal();
-
-        cooldownUntil = now + cooldownMs;
-        currentKey=null; holdStart=0; holdSum=0; holdFrames=0;
-      }
-    }else{
-      if(currentKey === topKey){ currentKey=null; holdStart=0; holdSum=0; holdFrames=0; }
-    }
-  }
-
-  // 頁面載入後先把模型載入，右側灰字會顯示對應的 class 名稱
+// 載入模型（保留你的 ensureModel，其內呼叫 buildBars(...) 並 resetScores()）
+async function ensureModel(){
+  if (model) return;
+  model = await tmPose.load('./model.json','./metadata.json');
+  let labels=[];
   try{
-    await ensureModel();
-    info('模型就緒：請選擇影片開始分析', true);
-  }catch(e){
-    info('❌ 模型載入失敗：\n'+(e.message||e));
+    const meta = await fetch('./metadata.json',{cache:'no-store'}).then(r=>r.json());
+    const raw  = meta.labels || meta.classes || [];
+    labels = raw.map(x => (x && x.label) ? x.label : (typeof x==='string' ? x : ''));
+  }catch(_){}
+  indexMap = buildIndexMap(labels);     // 你原本的函式
+  classNames = labels.slice();
+  buildBars(classNames);                // 你原本的函式：渲染 8 條
+  resetScores();
+  info('模型就緒：請選擇影片開始分析', true);
+}
+
+// ========== 核心：每幀處理（影片畫到 400x400 → 推論 → 多重穩定化） ==========
+async function stepWithSource(sourceCanvas){
+  const { pose, posenetOutput } = await model.estimatePose(sourceCanvas);
+  const preds = await model.predict(posenetOutput);
+
+  // 顯示畫面 + 骨架（同一張 sourceCanvas，座標不飄）
+  ctx.drawImage(sourceCanvas, 0, 0, cv.width, cv.height);
+  if(pose){ tmPose.drawKeypoints(pose.keypoints, 0.5, ctx); tmPose.drawSkeleton(pose.keypoints, 0.5, ctx); }
+
+  // 取 8 類機率（缺的給 0）
+  const rawProb = {};
+  TARGETS.forEach(t=>{
+    const idx = indexMap ? indexMap[t.key] : -1;
+    rawProb[t.key] = (idx>=0 && preds[idx]) ? (preds[idx].probability || 0) : 0;
+  });
+
+  // 1) EMA 單幀平滑
+  TARGETS.forEach(t=>{
+    const v = rawProb[t.key];
+    if(!(t.key in smooth)) smooth[t.key]=0;
+    smooth[t.key] = EMA_ALPHA*v + (1-EMA_ALPHA)*smooth[t.key];
+  });
+
+  // 2) 滑動視窗：放入當前平滑後向量，維持 WINDOW 長度
+  ring.push(TARGETS.map(t=>smooth[t.key]));
+  if(ring.length > WINDOW) ring.shift();
+
+  // 計算窗口平均
+  const avg = Object.fromEntries(TARGETS.map((t,i)=>{
+    const mean = ring.reduce((s,vec)=>s+vec[i], 0) / ring.length;
+    return [t.key, mean];
+  }));
+
+  // 更新條（用窗口平均值）
+  TARGETS.forEach(t=>{
+    const pct = (avg[t.key]*100).toFixed(1)+'%';
+    const bar = $('bar-'+t.key);
+    if(bar){ bar.style.width = pct; bar.textContent = pct; }
+  });
+
+  // 3) 邊際判斷：Top-1 & Top-2 的差距必須夠大
+  const sorted = TARGETS
+      .map(t=>({key:t.key, v:avg[t.key]}))
+      .sort((a,b)=>b.v-a.v);
+  const top1 = sorted[0], top2 = sorted[1];
+  const marginOK = (top1.v - top2.v) >= MARGIN;
+
+  // 顯示當前
+  const topName = TARGETS.find(x=>x.key===top1.key)?.name || '—';
+  $('currentMove').textContent = `${topName}（${(top1.v*100).toFixed(0)}%）`;
+
+  // One-shot 計分（用「窗口平均」+「邊際」+「每式門檻」）
+  if(marginOK){
+    scoreTick(top1.key, top1.v);
+  }else{
+    // 邊際不足 → 視為不穩定，重置持續計時
+    if(currentKey === top1.key){ currentKey=null; holdStart=0; holdSum=0; holdFrames=0; }
   }
-})();
+}
+
+// 一次完成 = 100 分（只記第一次）
+function scoreTick(topKey, conf){
+  const uiTH = Math.max(0.5, Math.min(0.95, parseFloat($('thres').value)||FALLBACK_THRESH));
+  const clsTH = PER_CLASS_THRESH[topKey] ?? uiTH;            // 每式客製門檻
+  const threshold = Math.max(uiTH, clsTH);                   // 取較嚴格者
+
+  const minHoldMs = Math.max(500, Math.min(5000, (parseFloat($('hold').value)||2)*1000));
+  const cooldownMs= Math.max(200, Math.min(3000, (parseFloat($('cool').value)||0.8)*1000));
+  const now = performance.now();
+
+  if(done[topKey]) return;        // 該式已完成
+  if(now < cooldownUntil) return; // 冷卻中
+  if(conf < threshold){           // 低於門檻
+    if(currentKey === topKey){ currentKey=null; holdStart=0; holdSum=0; holdFrames=0; }
+    return;
+  }
+
+  // 穩定持續到時間 → 記 100 分
+  if(currentKey !== topKey){
+    currentKey = topKey; holdStart = now; holdSum=0; holdFrames=0;
+  }
+  holdSum += conf; holdFrames++;
+  const held = now - holdStart;
+
+  if(held >= minHoldMs){
+    done[currentKey] = true;
+    score[currentKey] = 100;
+    $('status-'+currentKey).textContent = '✅ 已完成';
+    $('sc-'+currentKey).textContent = '100';
+    flashRow(currentKey);
+    recalcTotal();
+
+    cooldownUntil = now + cooldownMs;
+    currentKey=null; holdStart=0; holdSum=0; holdFrames=0;
+  }
+}
 </script>
-</body>
-</html>
